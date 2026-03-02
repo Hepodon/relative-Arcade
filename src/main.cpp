@@ -4,12 +4,16 @@
 #include "liblvgl/llemu.hpp"
 #include "mcl.hpp"
 #include "pros/abstract_motor.hpp"
+#include "pros/misc.h"
 
 constexpr size_t PARTICLES = 3000;
 ad::MCL<PARTICLES> mcl;
 ad::Point last_odom_pos{0.0f, 0.0f};
 bool mcl_initialized = false;
+
 using namespace pros;
+
+Controller userInput(E_CONTROLLER_MASTER);
 
 MotorGroup aleft({0, 0, 0}, v5::MotorGears::blue);
 MotorGroup aright({0, 0, 0}, v5::MotorGears::blue);
@@ -61,18 +65,6 @@ lemlib::ControllerSettings
     );
 lemlib::Chassis chassis(DT, lateral_controller, angular_controller, sensors);
 
-void initialize() {
-  chassis.calibrate();
-
-  // starting position (CHANGE THESE to your actual start)
-  float start_x = 0.0f;
-  float start_y = 0.0f;
-
-  mcl.init(start_x, start_y, 2.5f);
-
-  last_odom_pos = ad::Point{start_x, start_y};
-  mcl_initialized = true;
-}
 void odom() {
   if (!mcl_initialized)
     return;
@@ -131,11 +123,25 @@ void odom() {
   mcl.resample();
 }
 
+void initialize() {
+  pros::lcd::initialize();
+  chassis.calibrate();
+
+  // starting position (CHANGE THESE to your actual start)
+  float start_x = 0.0f;
+  float start_y = 0.0f;
+
+  mcl.init(start_x, start_y, 2.5f);
+
+  last_odom_pos = ad::Point{start_x, start_y};
+  mcl_initialized = true;
+}
+
 Task odomTask([] {
-  while (true) {
-    odom();
-    delay(10); // 100Hz
-  }
+  //   while (true) {
+  //     odom();
+  //     delay(10); // 100Hz
+  //   }
 });
 
 void disabled() {}
@@ -145,12 +151,22 @@ void competition_initialize() {}
 void autonomous() {}
 
 void opcontrol() {
-  pros::lcd::initialize();
+  float theta;
+  float theta_deg;
   while (true) {
     // print robot location to the brain screen
     pros::lcd::print(0, "X: %f", chassis.getPose().x);         // x
     pros::lcd::print(1, "Y: %f", chassis.getPose().y);         // y
     pros::lcd::print(2, "Theta: %f", chassis.getPose().theta); // heading
+
+    theta = std::atan2(userInput.get_analog(ANALOG_RIGHT_Y),
+                       userInput.get_analog(ANALOG_RIGHT_X)) *
+            (180.0f / M_PI); // returns angle in radians
+
+    chassis.turnToHeading(theta, 100);
+
+    // chassis.arcade(userInput.get_analog(ANALOG_LEFT_Y), 0, true, 0.65);
+
     // delay to save resources
     pros::delay(100);
   }
