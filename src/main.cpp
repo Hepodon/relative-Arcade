@@ -3,8 +3,9 @@
 #include "lemlib/chassis/trackingWheel.hpp"
 #include "liblvgl/llemu.hpp"
 #include "mcl.hpp"
-#include "pros/abstract_motor.hpp"
+#include "pros/distance.hpp"
 #include "pros/misc.h"
+#include <cmath>
 
 constexpr size_t PARTICLES = 3000;
 ad::MCL<PARTICLES> mcl;
@@ -13,57 +14,61 @@ bool mcl_initialized = false;
 
 using namespace pros;
 
-Controller userInput(E_CONTROLLER_MASTER);
+pros::MotorGroup aleft({-10, -9, -8});
+pros::MotorGroup aright({1, 2, 3});
 
-MotorGroup aleft({0, 0, 0}, v5::MotorGears::blue);
-MotorGroup aright({0, 0, 0}, v5::MotorGears::blue);
+pros::MotorGroup middle({7, -4});
 
-Motor arm_Score(0, v5::MotorGears::red);
-Motor intake(0);
+pros::adi::Pneumatics match('a', false);
+pros::adi::Pneumatics arm('h', false);
+pros::adi::Pneumatics tripstate('b', false);
+pros::adi::Pneumatics tripstate2('e', false);
 
-Distance Dleft(0);
-Distance Dright(0);
-Distance Dfront(0);
-Distance DbackR(0);
-Distance DbackL(0);
+pros::Rotation vertRot(5);
 
-IMU inertialT(0);
-IMU inertialB(0);
+lemlib::TrackingWheel vert(&vertRot, lemlib::Omniwheel::NEW_2, 0.75);
 
-pros::Rotation leftVert(0);
-pros::Rotation rightVert(0);
+pros::IMU inertialT(6);
 
-lemlib::TrackingWheel LEFT(&leftVert, lemlib::Omniwheel::NEW_2, 0, 1);
-lemlib::TrackingWheel RIGHT(&rightVert, lemlib::Omniwheel::NEW_2, 0, 1);
+pros::Distance Dleft(11);
+pros::Distance Dright(20);
+pros::Distance DfrontL(12);
+pros::Distance DfrontR(18);
+pros::Distance Dback(19);
 
-lemlib::OdomSensors sensors(&LEFT, &RIGHT, nullptr, nullptr, &inertialT);
+lemlib::Drivetrain DT(&aleft, &aright, 11, lemlib::Omniwheel::NEW_325, 450, 6);
 
-lemlib::Drivetrain DT(&aleft, &aright, 11, lemlib::Omniwheel::NEW_325, 450, 12);
+lemlib::OdomSensors sensors(&vert, nullptr, nullptr, nullptr, &inertialT);
 
+// lateral PID controller
 lemlib::ControllerSettings
-    lateral_controller(10,  // proportional gain (kP)
+    lateral_controller(5,   // proportional gain (kP)
                        0,   // integral gain (kI)
-                       3,   // derivative gain (kD)
+                       5.5, // derivative gain (kD)
                        3,   // anti windup
-                       1,   // small error range, in inches
+                       0.5, // small error range, in inches
                        100, // small error range timeout, in milliseconds
-                       3,   // large error range, in inches
-                       500, // large error range timeout, in milliseconds
+                       1.5, // large error range, in inches
+                       200, // large error range timeout, in milliseconds
                        20   // maximum acceleration (slew)
     );
 
+// angular PID controller
 lemlib::ControllerSettings
-    angular_controller(2,   // proportional gain (kP)
-                       0,   // integral gain (kI)
-                       10,  // derivative gain (kD)
-                       3,   // anti windup
-                       1,   // small error range, in degrees
-                       100, // small error range timeout, in milliseconds
-                       3,   // large error range, in degrees
-                       500, // large error range timeout, in milliseconds
-                       0    // maximum acceleration (slew)
+    angular_controller(4.45, // proportional gain (kP)
+                       0,    // integral gain (kI)
+                       31.5, // derivative gain (kD)
+                       3,    // anti windup
+                       1,    // small error range, in degrees
+                       100,  // small error range timeout, in milliseconds
+                       3,    // large error range, in degrees
+                       500,  // large error range timeout, in milliseconds
+                       0     // maximum acceleration (slew)
     );
+
 lemlib::Chassis chassis(DT, lateral_controller, angular_controller, sensors);
+
+pros::Controller userInput(pros::E_CONTROLLER_MASTER);
 
 void odom() {
   if (!mcl_initialized)
@@ -109,10 +114,11 @@ void odom() {
     readings.emplace_back(d, std_dev, rel.point(), ray_pt);
   };
 
-  add_sensor(Dleft, ad::Position{-5.0f, 0.0f, ad::deg(180)});
-  add_sensor(Dright, ad::Position{5.0f, 0.0f, ad::deg(0)});
-  add_sensor(Dfront, ad::Position{0.0f, 5.0f, ad::deg(90)});
-  add_sensor(DbackL, ad::Position{0.0f, -5.0f, ad::deg(-90)});
+  add_sensor(Dleft, ad::Position{-4.625f, 1.625f, ad::deg(-90)});
+  add_sensor(Dright, ad::Position{4.625f, 1.625f, ad::deg(90)});
+  add_sensor(DfrontR, ad::Position{5.0f, 5.625f, ad::deg(0)});
+  add_sensor(DfrontL, ad::Position{-5.0f, -5.625f, ad::deg(0)});
+  add_sensor(Dback, ad::Position{0.0f, -5.0f, ad::deg(180)});
 
   mcl.update(readings);
 
@@ -123,6 +129,82 @@ void odom() {
   mcl.resample();
 }
 
+bool in = false;
+bool mid = false;
+bool top = false;
+bool out = false;
+
+void scoreTop() {
+  if (!top) {
+    tripstate.extend();
+    tripstate2.extend();
+    middle.move(127);
+    top = true;
+    mid = false;
+    out = false;
+    in = false;
+  } else {
+    middle.brake();
+    top = false;
+    mid = false;
+    out = false;
+    in = false;
+  }
+}
+
+void intake() {
+  if (!in) {
+    tripstate.extend();
+    tripstate2.retract();
+    middle.move(127);
+    in = true;
+    top = false;
+    mid = false;
+    out = false;
+  } else {
+    middle.brake();
+    top = true;
+    mid = false;
+    out = false;
+    in = false;
+  }
+}
+
+void scoreMid() {
+  if (!mid) {
+    tripstate.retract();
+    tripstate2.retract();
+    middle.move(127);
+    mid = true;
+    top = false;
+    out = false;
+    in = false;
+  } else {
+    middle.brake();
+    top = true;
+    mid = false;
+    out = false;
+    in = false;
+  }
+}
+
+void outtake() {
+  out = true;
+  top = false;
+  mid = false;
+  in = false;
+  middle.move(-127);
+  while (userInput.get_digital(DIGITAL_B)) {
+    delay(5);
+  }
+  middle.brake();
+
+  out = false;
+  top = false;
+  mid = false;
+  in = false;
+}
+
 void initialize() {
   pros::lcd::initialize();
   chassis.calibrate();
@@ -131,18 +213,18 @@ void initialize() {
   float start_x = 0.0f;
   float start_y = 0.0f;
 
-  mcl.init(start_x, start_y, 2.5f);
+  // mcl.init(start_x, start_y, 2.5f);
 
   last_odom_pos = ad::Point{start_x, start_y};
   mcl_initialized = true;
 }
 
-// Task odomTask([] {
-//   //   while (true) {
-//   //     odom();
-//   //     delay(10); // 100Hz
-//   //   }
-// });
+Task odomTask([] {
+  while (true) {
+    odom();
+    delay(10); // 100Hz
+  }
+});
 
 void disabled() {}
 
@@ -151,23 +233,32 @@ void competition_initialize() {}
 void autonomous() {}
 
 void opcontrol() {
-  float theta;
-  float theta_deg;
   while (true) {
-    // print robot location to the brain screen
-    pros::lcd::print(0, "X: %f", chassis.getPose().x);         // x
-    pros::lcd::print(1, "Y: %f", chassis.getPose().y);         // y
-    pros::lcd::print(2, "Theta: %f", chassis.getPose().theta); // heading
+    chassis.arcade(userInput.get_analog(E_CONTROLLER_ANALOG_LEFT_Y),
+                   userInput.get_analog(E_CONTROLLER_ANALOG_RIGHT_X), true,
+                   0.4);
 
-    theta = std::atan2(userInput.get_analog(ANALOG_RIGHT_Y),
-                       userInput.get_analog(ANALOG_RIGHT_X)) *
-            (180.0f / M_PI); // returns angle in radians
+    if (userInput.get_digital_new_press(DIGITAL_L1)) {
+      arm.toggle();
+    }
+    if (userInput.get_digital_new_press(DIGITAL_L2)) {
+      match.toggle();
+    }
 
-    chassis.turnToHeading(theta, 100);
+    if (userInput.get_digital_new_press(DIGITAL_R2)) {
+      scoreTop();
+    } else if (userInput.get_digital_new_press(DIGITAL_R1)) {
+      intake();
+    } else if (userInput.get_digital_new_press(DIGITAL_A)) {
+      scoreMid();
+    } else if (userInput.get_digital(DIGITAL_B)) {
+      outtake();
+    } else if (userInput.get_digital_new_press(DIGITAL_DOWN)) {
+      tripstate.toggle();
+    } else if (userInput.get_digital_new_press(DIGITAL_UP)) {
+      tripstate2.toggle();
+    }
 
-    // chassis.arcade(userInput.get_analog(ANALOG_LEFT_Y), 0, true, 0.65);
-
-    // delay to save resources
-    pros::delay(100);
+    delay(5);
   }
 }
